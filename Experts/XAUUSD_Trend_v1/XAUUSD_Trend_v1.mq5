@@ -18,6 +18,7 @@ input double H4_ADX_Min      = 25.0;    // Minimum ADX value to allow entry (0 =
 input group "=== Entry (H1) ==="
 input int    H1_EMA_Period   = 40;       // H1 EMA period for pullback
 input double EMA_Touch_Buffer = 0.5;     // ATR multiplier: price must be within N*ATR of H1 EMA40
+input double H1_ATR_Min      = 0.0;     // Min H1 ATR to allow entry — skip low-volatility chop (0 = disabled)
 
 input group "=== Risk Management ==="
 input double RiskPercent     = 1.0;      // Risk per trade (% of equity)
@@ -195,6 +196,9 @@ int GetH1Signal(int trend, double h4_ema50)
    double atr_val = atr[0];
    double touch_range = EMA_Touch_Buffer * atr_val;
 
+   // Skip entry in low-volatility / choppy conditions
+   if(H1_ATR_Min > 0 && atr_val < H1_ATR_Min) return 0;
+
    if(trend == 1)
      {
       // Price position filter: H1 close must be above H4 EMA50
@@ -305,12 +309,15 @@ void OpenTrade(int direction)
    double sl_distance = MathAbs(entry_price - sl_price);
    if(sl_distance < _Point) return;
 
-   // Validate SL range: must be between 1x and 4x ATR
+   // Ensure SL is at least 1x ATR — widen to ATR floor if swing point is too close
    if(sl_distance < 1.0 * atr_val)
      {
-      Print("SL too tight (", sl_distance, " < 1x ATR ", atr_val, "), skip trade");
-      return;
+      sl_price    = direction == 1 ? entry_price - atr_val : entry_price + atr_val;
+      sl_distance = atr_val;
+      Print("SL widened to 1x ATR floor: ", sl_price);
      }
+
+   // Skip if SL is wider than 4x ATR
    if(sl_distance > 4.0 * atr_val)
      {
       Print("SL too wide (", sl_distance, " > 4x ATR ", 4.0*atr_val, "), skip trade");
