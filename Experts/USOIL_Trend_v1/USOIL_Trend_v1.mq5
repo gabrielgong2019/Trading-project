@@ -2,7 +2,7 @@
 //|                                             USOIL_Trend_v1.mq5 |
 //|                                                                  |
 //|  Strategy: H4 Trend Filter + H1 Price Action Entry              |
-//|  Instruments: USOIL                                            |
+//|  Instruments: XBRUSD (Brent Crude Oil)                         |
 //|  Version: 1.0 - Port from XAUUSD_Trend_v1.3                     |
 //+------------------------------------------------------------------+
 #property copyright "Trading Project"
@@ -34,6 +34,7 @@ input int    SwingLookback   = 10;       // Bars to look back for swing high/low
 
 input group "=== Circuit Breaker ==="
 input double MaxDrawdownPct  = 20.0;    // Stop new trades if equity drops X% from peak
+input double HardStopPct     = 30.0;    // Close ALL positions if equity drops X% from peak
 input int    CBCooldownDays  = 21;      // Cooldown period in days before resuming after CB trigger
 
 //--- Global Variables
@@ -98,6 +99,21 @@ void OnTick()
       g_peak_equity = current_equity;
 
    double drawdown_pct = (g_peak_equity - current_equity) / g_peak_equity * 100.0;
+
+   // Hard stop: close ALL positions immediately if drawdown exceeds HardStopPct
+   if(drawdown_pct >= HardStopPct)
+     {
+      Print("HARD STOP TRIGGERED: Drawdown ", DoubleToString(drawdown_pct, 1),
+            "% >= ", HardStopPct, "%. Closing ALL positions immediately.");
+      CloseAllPositions();
+      if(!g_cb_active)
+        {
+         g_cb_active       = true;
+         g_cb_trigger_time = currentBarTime;
+        }
+      return;
+     }
+
    if(!g_cb_active && drawdown_pct >= MaxDrawdownPct)
      {
       g_cb_active       = true;
@@ -489,6 +505,43 @@ void ModifyPosition(ulong ticket, double new_sl, double new_tp)
   }
 
 //+------------------------------------------------------------------+
+//| Close all positions for this EA immediately at market           |
+//+------------------------------------------------------------------+
+void CloseAllPositions()
+  {
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+
+      long   pos_type = PositionGetInteger(POSITION_TYPE);
+      double vol      = PositionGetDouble(POSITION_VOLUME);
+
+      MqlTradeRequest request = {};
+      MqlTradeResult  result  = {};
+      request.action       = TRADE_ACTION_DEAL;
+      request.position     = ticket;
+      request.symbol       = _Symbol;
+      request.volume       = vol;
+      request.type         = pos_type == POSITION_TYPE_BUY ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+      request.price        = pos_type == POSITION_TYPE_BUY
+                             ? SymbolInfoDouble(_Symbol, SYMBOL_BID)
+                             : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      request.deviation    = 50;
+      request.magic        = MagicNumber;
+      request.comment      = "HardStop";
+      request.type_filling = GetFillMode();
+
+      if(!OrderSend(request, result))
+         Print("CloseAllPositions failed: ticket=", ticket, " retcode=", result.retcode);
+      else
+         Print("Position closed by hard stop: ticket=", ticket, " vol=", vol);
+     }
+  }
+
+//+------------------------------------------------------------------+
 //| Calculate lot size based on 1% risk                              |
 //+------------------------------------------------------------------+
 double CalculateLotSize(double sl_distance_price)
@@ -506,9 +559,20 @@ double CalculateLotSize(double sl_distance_price)
    double value_per_lot = (sl_distance_price / tick_size) * tick_value;
    if(value_per_lot <= 0) return 0;
 
-   double lot_size = risk_amount / value_per_lot;
-   lot_size = MathFloor(lot_size / lot_step) * lot_step;
-   lot_size = MathMax(lot_min, MathMin(lot_max, lot_size));
+   double raw_lots  = risk_amount / value_per_lot;
+   // If even the minimum lot exceeds our risk target, skip the trade
+   // rather than silently taking on oversized risk
+   if(raw_lots < lot_min)
+     {
+      double actual_risk_pct = (lot_min * value_per_lot) / equity * 100.0;
+      Print("Skip trade: SL too wide for current balance. Required lots=",
+            DoubleToString(raw_lots, 3), " < lot_min=", lot_min,
+            " (actual risk would be ", DoubleToString(actual_risk_pct, 1), "% vs target ", RiskPercent, "%)");
+      return 0;
+     }
+
+   double lot_size = MathFloor(raw_lots / lot_step) * lot_step;
+   lot_size = MathMin(lot_max, lot_size);
 
    return lot_size;
   }
