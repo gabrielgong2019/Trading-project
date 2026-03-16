@@ -101,7 +101,8 @@ void OnTick()
    double drawdown_pct = (g_peak_equity - current_equity) / g_peak_equity * 100.0;
 
    // Hard stop: close ALL positions immediately if drawdown exceeds HardStopPct
-   if(drawdown_pct >= HardStopPct)
+   // Guard: only fire once — if CB is already active, let the cooldown logic handle it
+   if(!g_cb_active && drawdown_pct >= HardStopPct)
      {
       Print("HARD STOP TRIGGERED: Drawdown ", DoubleToString(drawdown_pct, 1),
             "% >= ", HardStopPct, "%. Closing ALL positions immediately.");
