@@ -44,7 +44,7 @@ input group "=== Risk Management ==="
 input double RiskPercent        = 1.0;   // Risk per trade (% of equity)
 input double TP_RR              = 2.0;   // Take profit risk:reward ratio (first target)
 input double ATR_Trail_Multi    = 2.0;   // ATR multiplier for trailing stop
-input double SL_Swing_Buffer    = 0.5;  // ATR buffer below swing level for stop loss
+input double SL_ATR_Multi       = 2.5;   // ATR multiplier for initial stop loss
 input int    ATR_Period         = 14;    // ATR period
 input int    MaxUnprotected     = 2;     // Max positions not yet at breakeven
 
@@ -516,7 +516,7 @@ ENUM_ORDER_TYPE_FILLING GetFillMode()
 //| [FIX-1] Removed forced lot_min*2 override                       |
 //| [FIX-3] Added slippage guard vs bar[1] close price              |
 //+------------------------------------------------------------------+
-void OpenTrade(int direction, double swing_level)
+void OpenTrade(int direction, double /*swing_level*/)
   {
    double atr[];
    ArraySetAsSeries(atr, true);
@@ -546,12 +546,12 @@ void OpenTrade(int direction, double swing_level)
    if(direction == 1)
      {
       entry_price = current_ask;
-      sl_price    = swing_level - SL_Swing_Buffer * atr_val;  // below swing low
+      sl_price    = entry_price - SL_ATR_Multi * atr_val;
      }
    else
      {
       entry_price = current_bid;
-      sl_price    = swing_level + SL_Swing_Buffer * atr_val;  // above swing high
+      sl_price    = entry_price + SL_ATR_Multi * atr_val;
      }
 
    double sl_distance = MathAbs(entry_price - sl_price);
