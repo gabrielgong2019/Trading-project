@@ -38,8 +38,6 @@ input group "=== Entry (H1) ==="
 input int    H1_EMA_Period      = 40;    // H1 EMA period for pullback
 input double EMA_Touch_Buffer   = 0.5;  // ATR multiplier: price must be within N*ATR of H1 EMA40
 input double H1_ATR_Min         = 0.0;   // Min H1 ATR to allow entry (0 = disabled)
-input int    ATR_Ratio_Period   = 50;    // Bars to average for ATR ratio baseline
-input double ATR_Min_Ratio      = 0.8;  // Min ratio of current ATR / avg ATR (0 = disabled)
 input double MaxEntrySlippage   = 5.0;   // [FIX-3] Max ATR distance from bar[1] close to current price before skipping entry (5.0 = disabled; tune after live data)
 
 input group "=== Risk Management ==="
@@ -397,7 +395,7 @@ int GetH1Signal(int trend, double h4_ema50)
    ArraySetAsSeries(atr, true);
 
    if(CopyBuffer(h1_ema_handle, 0, 1, 3, ema) < 3) return 0;
-   if(CopyBuffer(h1_atr_handle, 0, 1, ATR_Ratio_Period + 1, atr) < ATR_Ratio_Period + 1) return 0;
+   if(CopyBuffer(h1_atr_handle, 0, 1, 1, atr) < 1) return 0;
 
    double sig_open   = iOpen(_Symbol,  PERIOD_H1, 1);
    double sig_high   = iHigh(_Symbol,  PERIOD_H1, 1);
@@ -411,14 +409,6 @@ int GetH1Signal(int trend, double h4_ema50)
    double touch_range = EMA_Touch_Buffer * atr_val;
 
    if(H1_ATR_Min > 0 && atr_val < H1_ATR_Min) return 0;
-
-   if(ATR_Min_Ratio > 0)
-     {
-      double atr_sum = 0;
-      for(int i = 1; i <= ATR_Ratio_Period; i++) atr_sum += atr[i];
-      double atr_avg = atr_sum / ATR_Ratio_Period;
-      if(atr_avg > 0 && atr_val / atr_avg < ATR_Min_Ratio) return 0;
-     }
 
    if(trend == 1)
      {
