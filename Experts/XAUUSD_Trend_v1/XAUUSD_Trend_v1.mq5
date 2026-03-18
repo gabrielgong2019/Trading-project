@@ -41,7 +41,11 @@ input double H1_ATR_Min         = 0.0;   // Min H1 ATR to allow entry (0 = disab
 input double MaxEntrySlippage   = 5.0;   // [FIX-3] Max ATR distance from bar[1] close to current price before skipping entry (5.0 = disabled; tune after live data)
 
 input group "=== Risk Management ==="
-input double RiskPercent        = 1.0;   // Risk per trade (% of equity)
+input double RiskPercent        = 1.0;   // Risk per trade (% of equity) — base rate
+input double DD_Warn1           = 10.0;  // Drawdown% threshold: reduce risk to Risk_Warn1
+input double DD_Warn2           = 15.0;  // Drawdown% threshold: reduce risk to Risk_Warn2
+input double Risk_Warn1         = 0.75;  // RiskPercent when drawdown >= DD_Warn1
+input double Risk_Warn2         = 0.50;  // RiskPercent when drawdown >= DD_Warn2
 input double TP_RR              = 2.0;   // Take profit risk:reward ratio (first target)
 input double ATR_Trail_Multi    = 2.0;   // ATR multiplier for trailing stop
 input double SL_ATR_Multi       = 2.5;   // ATR multiplier for initial stop loss
@@ -59,6 +63,7 @@ input group "=== Circuit Breaker ==="
 input double MaxDrawdownPct     = 20.0;  // Stop new trades if equity drops X% from peak
 input double HardStopPct        = 30.0;  // Close ALL positions if equity drops X% from peak
 input int    CBCooldownDays     = 21;    // Cooldown days before resuming after CB trigger
+input int    CBRecoveryDays     = 14;    // Half-size trading days after CB reset
 
 input group "=== News Filter ==="
 input bool   NewsFilter_Enable         = true;  // Enable news blackout filter
@@ -139,6 +144,8 @@ int      h1_ema_handle, h1_atr_handle;
 double   g_peak_equity     = 0.0;
 bool     g_cb_active       = false;
 datetime g_cb_trigger_time = 0;
+bool     g_cb_recovery     = false;
+datetime g_cb_reset_time   = 0;
 
 //--- [FIX-4] Per-position protection flag map
 #define MAX_POSITIONS 50
@@ -251,6 +258,24 @@ int OnInit()
    g_peak_equity = AccountInfoDouble(ACCOUNT_EQUITY);
    Print("XAUUSD_Trend v1.3 initialised. News filter: ",
          NewsFilter_Enable ? "ON" : "OFF");
+
+   if(NewsFilter_Enable)
+     {
+      int n = ArraySize(g_news_schedule);
+      if(n > 0)
+        {
+         NewsEvent &last = g_news_schedule[n - 1];
+         MqlDateTime dt  = {};
+         dt.year = last.year; dt.mon = last.month; dt.day = last.day;
+         dt.hour = last.hour; dt.min = last.minute;
+         datetime last_event = StructToTime(dt);
+         if(last_event < TimeCurrent())
+            Print("WARNING: News schedule EXPIRED. Last event: ",
+                  TimeToString(last_event, TIME_DATE), " (", last.label,
+                  "). Update g_news_schedule table.");
+        }
+     }
+
    return INIT_SUCCEEDED;
   }
 
@@ -313,9 +338,11 @@ void OnTick()
       int days_elapsed = (int)((currentBarTime - g_cb_trigger_time) / 86400);
       if(days_elapsed >= CBCooldownDays)
         {
-         g_cb_active   = false;
-         g_peak_equity = current_equity;
-         Print("CIRCUIT BREAKER RESET: Cooldown complete. New peak equity: ", current_equity);
+         g_cb_active      = false;
+         g_cb_recovery    = true;
+         g_cb_reset_time  = currentBarTime;
+         g_peak_equity    = current_equity;
+         Print("CIRCUIT BREAKER RESET: Entering ", CBRecoveryDays, "-day half-size recovery. New peak: ", current_equity);
         }
       else
         {
@@ -327,6 +354,16 @@ void OnTick()
             lastCBLog = currentBarTime;
            }
          return;
+        }
+     }
+
+   if(g_cb_recovery)
+     {
+      int recovery_days = (int)((currentBarTime - g_cb_reset_time) / 86400);
+      if(recovery_days >= CBRecoveryDays)
+        {
+         g_cb_recovery = false;
+         Print("CB RECOVERY COMPLETE: Returning to full position size.");
         }
      }
 
@@ -740,10 +777,21 @@ void CloseAllPositions()
 //| Calculate lot size based on risk %                               |
 //| [FIX-1] Removed forced lot_min*2 override                       |
 //+------------------------------------------------------------------+
+double GetEffectiveRisk()
+  {
+   double equity       = AccountInfoDouble(ACCOUNT_EQUITY);
+   double drawdown_pct = g_peak_equity > 0 ? (g_peak_equity - equity) / g_peak_equity * 100.0 : 0.0;
+   double risk         = RiskPercent;
+   if(drawdown_pct >= DD_Warn2)      risk = Risk_Warn2;
+   else if(drawdown_pct >= DD_Warn1) risk = Risk_Warn1;
+   if(g_cb_recovery) risk *= 0.5;
+   return risk;
+  }
+
 double CalculateLotSize(double sl_distance_price)
   {
    double equity      = AccountInfoDouble(ACCOUNT_EQUITY);
-   double risk_amount = equity * RiskPercent / 100.0;
+   double risk_amount = equity * GetEffectiveRisk() / 100.0;
    double tick_value  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
    double tick_size   = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
    double lot_min     = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
