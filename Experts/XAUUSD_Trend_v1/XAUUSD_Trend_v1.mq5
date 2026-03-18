@@ -264,7 +264,7 @@ int OnInit()
       int n = ArraySize(g_news_schedule);
       if(n > 0)
         {
-         NewsEvent &last = g_news_schedule[n - 1];
+         NewsEvent last = g_news_schedule[n - 1];
          MqlDateTime dt  = {};
          dt.year = last.year; dt.mon = last.month; dt.day = last.day;
          dt.hour = last.hour; dt.min = last.minute;
