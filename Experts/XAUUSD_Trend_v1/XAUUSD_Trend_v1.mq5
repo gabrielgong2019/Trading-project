@@ -44,14 +44,13 @@ input group "=== Risk Management ==="
 input double RiskPercent        = 1.0;   // Risk per trade (% of equity)
 input double TP_RR              = 2.0;   // Take profit risk:reward ratio (first target)
 input double ATR_Trail_Multi    = 2.0;   // ATR multiplier for trailing stop
-input double SL_ATR_Multi       = 2.5;   // ATR multiplier for initial stop loss
+input double SL_Swing_Buffer    = 0.5;  // ATR buffer below swing level for stop loss
 input int    ATR_Period         = 14;    // ATR period
 input int    MaxUnprotected     = 2;     // Max positions not yet at breakeven
 
 input group "=== Trade Settings ==="
 input int    MagicNumber        = 20240001;
 input string TradeComment       = "XAUUSD_Trend_v1";
-input int    SwingLookback      = 10;    // Bars to look back for swing high/low
 input int    StartHour          = 11;    // Trading start hour (server time) — London open (GMT+3 DST), filters Asian session noise
 input int    EndHour            = 20;    // Trading end hour (server time) — covers London+NY overlap, filters late NY low-liquidity
 
@@ -349,10 +348,11 @@ void OnTick()
    int trend = GetH4Trend(h4_ema50);
    if(trend == 0) return;
 
-   int signal = GetH1Signal(trend);
+   double swing_level = 0.0;
+   int signal = GetH1Signal(trend, swing_level);
    if(signal == 0) return;
 
-   OpenTrade(signal);
+   OpenTrade(signal, swing_level);
   }
 
 //+------------------------------------------------------------------+
@@ -388,12 +388,14 @@ int GetH4Trend(double &h4_ema50_out)
 //+------------------------------------------------------------------+
 double GetH4SwingLow(int lookback)
   {
-   for(int i = 2; i <= lookback - 1; i++)
+   for(int i = 3; i <= lookback - 2; i++)
      {
-      double lo   = iLow(_Symbol, PERIOD_H4, i);
-      double lo_l = iLow(_Symbol, PERIOD_H4, i + 1);
-      double lo_r = iLow(_Symbol, PERIOD_H4, i - 1);
-      if(lo < lo_l && lo < lo_r)
+      double lo    = iLow(_Symbol, PERIOD_H4, i);
+      double lo_l1 = iLow(_Symbol, PERIOD_H4, i + 1);
+      double lo_l2 = iLow(_Symbol, PERIOD_H4, i + 2);
+      double lo_r1 = iLow(_Symbol, PERIOD_H4, i - 1);
+      double lo_r2 = iLow(_Symbol, PERIOD_H4, i - 2);
+      if(lo < lo_l1 && lo < lo_l2 && lo < lo_r1 && lo < lo_r2)
          return lo;
      }
    return 0.0;
@@ -404,12 +406,14 @@ double GetH4SwingLow(int lookback)
 //+------------------------------------------------------------------+
 double GetH4SwingHigh(int lookback)
   {
-   for(int i = 2; i <= lookback - 1; i++)
+   for(int i = 3; i <= lookback - 2; i++)
      {
-      double hi   = iHigh(_Symbol, PERIOD_H4, i);
-      double hi_l = iHigh(_Symbol, PERIOD_H4, i + 1);
-      double hi_r = iHigh(_Symbol, PERIOD_H4, i - 1);
-      if(hi > hi_l && hi > hi_r)
+      double hi    = iHigh(_Symbol, PERIOD_H4, i);
+      double hi_l1 = iHigh(_Symbol, PERIOD_H4, i + 1);
+      double hi_l2 = iHigh(_Symbol, PERIOD_H4, i + 2);
+      double hi_r1 = iHigh(_Symbol, PERIOD_H4, i - 1);
+      double hi_r2 = iHigh(_Symbol, PERIOD_H4, i - 2);
+      if(hi > hi_l1 && hi > hi_l2 && hi > hi_r1 && hi > hi_r2)
          return hi;
      }
    return 0.0;
@@ -418,7 +422,7 @@ double GetH4SwingHigh(int lookback)
 //+------------------------------------------------------------------+
 //| Get H1 price action signal                                       |
 //+------------------------------------------------------------------+
-int GetH1Signal(int trend)
+int GetH1Signal(int trend, double &out_swing_level)
   {
    double atr[];
    ArraySetAsSeries(atr, true);
@@ -440,21 +444,21 @@ int GetH1Signal(int trend)
      {
       double swing_low = GetH4SwingLow(H4_Swing_Lookback);
       if(swing_low == 0.0) return 0;
-      if(sig_low  > swing_low + touch_range) return 0;   // didn't reach swing low zone
-      if(sig_close < swing_low - touch_range) return 0;  // closed well below (breakdown)
+      if(sig_low   > swing_low + touch_range) return 0;  // didn't reach swing low zone
+      if(sig_close < swing_low) return 0;                // [②] close must confirm above swing low
       bool pb = IsBullishPinBar(sig_open, sig_high, sig_low, sig_close);
       bool eg = IsBullishEngulfing(prev_open, prev_close, sig_open, sig_close);
-      if(pb || eg) return 1;
+      if(pb || eg) { out_swing_level = swing_low; return 1; }
      }
    if(trend == -1)
      {
       double swing_high = GetH4SwingHigh(H4_Swing_Lookback);
       if(swing_high == 0.0) return 0;
-      if(sig_high < swing_high - touch_range) return 0;  // didn't reach swing high zone
-      if(sig_close > swing_high + touch_range) return 0; // closed well above (breakout)
+      if(sig_high  < swing_high - touch_range) return 0;  // didn't reach swing high zone
+      if(sig_close > swing_high) return 0;                // [②] close must confirm below swing high
       bool pb = IsBearishPinBar(sig_open, sig_high, sig_low, sig_close);
       bool eg = IsBearishEngulfing(prev_open, prev_close, sig_open, sig_close);
-      if(pb || eg) return -1;
+      if(pb || eg) { out_swing_level = swing_high; return -1; }
      }
    return 0;
   }
@@ -512,7 +516,7 @@ ENUM_ORDER_TYPE_FILLING GetFillMode()
 //| [FIX-1] Removed forced lot_min*2 override                       |
 //| [FIX-3] Added slippage guard vs bar[1] close price              |
 //+------------------------------------------------------------------+
-void OpenTrade(int direction)
+void OpenTrade(int direction, double swing_level)
   {
    double atr[];
    ArraySetAsSeries(atr, true);
@@ -542,12 +546,12 @@ void OpenTrade(int direction)
    if(direction == 1)
      {
       entry_price = current_ask;
-      sl_price    = entry_price - SL_ATR_Multi * atr_val;
+      sl_price    = swing_level - SL_Swing_Buffer * atr_val;  // below swing low
      }
    else
      {
       entry_price = current_bid;
-      sl_price    = entry_price + SL_ATR_Multi * atr_val;
+      sl_price    = swing_level + SL_Swing_Buffer * atr_val;  // above swing high
      }
 
    double sl_distance = MathAbs(entry_price - sl_price);
@@ -796,31 +800,4 @@ double CalculateLotSize(double sl_distance_price)
    return MathMin(lot_max, lot_size);
   }
 
-//+------------------------------------------------------------------+
-//| Find swing low in last N H1 bars                                 |
-//+------------------------------------------------------------------+
-double FindSwingLow(int lookback)
-  {
-   double lowest = DBL_MAX;
-   for(int i = 1; i <= lookback; i++)
-     {
-      double low = iLow(_Symbol, PERIOD_H1, i);
-      if(low < lowest) lowest = low;
-     }
-   return lowest == DBL_MAX ? 0 : lowest;
-  }
-
-//+------------------------------------------------------------------+
-//| Find swing high in last N H1 bars                                |
-//+------------------------------------------------------------------+
-double FindSwingHigh(int lookback)
-  {
-   double highest = -DBL_MAX;
-   for(int i = 1; i <= lookback; i++)
-     {
-      double high = iHigh(_Symbol, PERIOD_H1, i);
-      if(high > highest) highest = high;
-     }
-   return highest == -DBL_MAX ? 0 : highest;
-  }
 //+------------------------------------------------------------------+
